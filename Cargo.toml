@@ -1,0 +1,17 @@
+[package]
+name = "netbird-embed"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings for NetBird's client/embed via Go C-shared FFI"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
