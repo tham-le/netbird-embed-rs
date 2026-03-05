@@ -1,0 +1,34 @@
+stages:
+  - check
+
+variables:
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+  GOPATH: "${CI_PROJECT_DIR}/.go"
+  GOMODCACHE: "${CI_PROJECT_DIR}/.go/pkg/mod"
+  GO_VERSION: "1.25.7"
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .cargo/registry/cache
+    - .cargo/git/db
+    - .go/pkg/mod
+    - target/
+
+check:
+  stage: check
+  image: rust:1.89
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq wget > /dev/null 2>&1
+    - wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+    - tar -C /usr/local -xzf /tmp/go.tar.gz
+    - export PATH="/usr/local/go/bin:${PATH}"
+    - rustup component add rustfmt clippy
+    - go version
+    - rustc --version
+  script:
+    - export PATH="/usr/local/go/bin:${PATH}"
+    - cargo fmt -- --check
+    - cargo clippy -- -D warnings
+    - cargo build
+    - cargo check --examples
