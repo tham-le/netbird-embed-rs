@@ -8,7 +8,7 @@ Embeds a full NetBird node (WireGuard mesh networking) into any Rust application
 
 - **Rust** ≥ 1.75
 - **Go** ≥ 1.25 (builds the C-shared library automatically via `build.rs`)
-- **Linux** (Unix socketpair for `dial_tcp`/`listen_tcp`; status/peers work on all platforms)
+- **Linux** (Unix socketpair for `dial`/`listen`; status/peers work on all platforms)
 
 ## Usage
 
@@ -40,8 +40,12 @@ for peer in client.peers()? {
     }
 }
 
-// Dial a peer over the mesh
-let stream = client.dial_tcp("10.200.0.1:8080")?;
+// Dial a peer over the mesh — returns a UnixStream (socketpair)
+let stream = client.dial("tcp", "10.200.0.1:8080")?;
+
+// Listen on the mesh — returns a Listener that yields UnixStreams
+let listener = client.listen(":8080")?;
+let conn = listener.accept()?;
 ```
 
 The client is automatically stopped and freed on drop.
@@ -55,8 +59,9 @@ The client is automatically stopped and freed on drop.
 | `client.stop()` | Leave the mesh network |
 | `client.status()` | Local peer info, management/signal state, peer list |
 | `client.peers()` | List of known peers with connection status |
-| `client.dial_tcp(addr)` | Dial a peer, returns `TcpStream` (Unix only) |
-| `client.listen_tcp(addr)` | Listen on mesh address, returns `TcpListener` (Unix only) |
+| `client.dial(net, addr)` | Dial a peer, returns `UnixStream` (Unix only) |
+| `client.listen(addr)` | Listen on mesh address, returns `Listener` (Unix only) |
+| `listener.accept()` | Accept next connection, returns `UnixStream` |
 
 ## Architecture
 
@@ -85,7 +90,7 @@ The client is automatically stopped and freed on drop.
 
 - **Integer handles** — Go GC manages real objects. Rust holds an `i32` handle. No Go pointers cross FFI.
 - **Caller-provided buffers** — Status/peers returned as JSON into Rust-allocated buffers. Returns `ERANGE` if too small; caller retries with larger buffer (handled automatically).
-- **Socketpair for connections** — `dial_tcp()` creates a Unix socketpair. Go pumps data between the mesh connection and one end; Rust gets the other as a raw file descriptor.
+- **Socketpair for connections** — `dial()` creates a Unix socketpair. Go pumps data between the mesh connection and one end; Rust gets the other as a `UnixStream`.
 - **No callbacks** — Status is polled. Avoids cross-runtime threading complexity.
 
 ## Building
@@ -113,6 +118,7 @@ CC=x86_64-w64-mingw32-gcc cargo build --target x86_64-pc-windows-gnu
 | One Go runtime per process | Two Go `.so` files in the same process causes GC corruption. This must be the only Go library loaded. |
 | Library size | The `.so` is ~50MB (Go runtime + NetBird + WireGuard). Strip with `go build -ldflags="-s -w"` to reduce. |
 | CGo call overhead | ~60-100ns per FFI call. Negligible for control plane (start/stop/status). |
+| Drop blocks | `Client::drop` calls Go `Stop()` which may block while tearing down the tunnel. Call `client.stop()` explicitly if you need non-blocking cleanup. |
 
 ## License
 
