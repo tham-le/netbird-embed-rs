@@ -9,6 +9,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"unsafe"
 
@@ -16,12 +17,14 @@ import (
 )
 
 var (
-	handleMu sync.Mutex
-	clients  = make(map[C.int]*clientState)
-	nextID   C.int = 1
+	handleMu      sync.Mutex
+	clients       = make(map[C.int]*clientState)
+	nextID        C.int = 1
+	lastCreateErr string
 )
 
 type clientState struct {
+	mu      sync.Mutex
 	client  *embed.Client
 	cancel  context.CancelFunc
 	lastErr string
@@ -36,7 +39,9 @@ func getClient(handle C.int) (*clientState, bool) {
 
 func setError(handle C.int, err error) C.int {
 	if cs, ok := getClient(handle); ok {
+		cs.mu.Lock()
 		cs.lastErr = err.Error()
+		cs.mu.Unlock()
 	}
 	return -1
 }
@@ -54,6 +59,7 @@ func writeJSON(data []byte, buf *C.char, bufLen C.int) C.int {
 
 // nb_new creates a new NetBird embedded client.
 // Returns a handle > 0 on success, or -1 on error.
+// On failure, use nb_create_errmsg to retrieve the error.
 //
 //export nb_new
 func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char) C.int {
@@ -82,8 +88,9 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 
 	client, err := embed.New(opts)
 	if err != nil {
-		// Store error for retrieval, but we have no handle yet.
-		// Caller should check return value.
+		handleMu.Lock()
+		lastCreateErr = err.Error()
+		handleMu.Unlock()
 		return -1
 	}
 
@@ -93,6 +100,20 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 	nextID++
 	clients[handle] = &clientState{client: client}
 	return handle
+}
+
+// nb_create_errmsg writes the last nb_new error into the caller-provided buffer.
+//
+//export nb_create_errmsg
+func nb_create_errmsg(buf *C.char, buf_len C.int) {
+	handleMu.Lock()
+	msg := lastCreateErr
+	handleMu.Unlock()
+
+	if msg == "" {
+		msg = "no error"
+	}
+	writeCString(msg, buf, buf_len)
 }
 
 // nb_start starts the NetBird client (joins the mesh).
@@ -105,10 +126,15 @@ func nb_start(handle C.int) C.int {
 		return -1
 	}
 
+	cs.mu.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
 	cs.cancel = cancel
+	cs.mu.Unlock()
 
 	if err := cs.client.Start(ctx); err != nil {
+		cs.mu.Lock()
+		cs.cancel = nil
+		cs.mu.Unlock()
 		cancel()
 		return setError(handle, err)
 	}
@@ -125,8 +151,12 @@ func nb_stop(handle C.int) C.int {
 		return -1
 	}
 
-	if cs.cancel != nil {
-		cs.cancel()
+	cs.mu.Lock()
+	cancel := cs.cancel
+	cs.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 
 	if err := cs.client.Stop(context.Background()); err != nil {
@@ -264,7 +294,7 @@ func nb_dial(handle C.int, net_type *C.char, addr *C.char) C.int {
 	goAddr := C.GoString(addr)
 
 	if goNet != "tcp" && goNet != "udp" {
-		return -1
+		return setError(handle, fmt.Errorf("unsupported network type: %q", goNet))
 	}
 
 	conn, err := cs.client.DialContext(context.Background(), goNet, goAddr)
@@ -285,6 +315,8 @@ func nb_dial(handle C.int, net_type *C.char, addr *C.char) C.int {
 
 // nb_listen starts listening on a mesh address.
 // Returns a file descriptor on success, -1 on error.
+// Each accepted connection is pumped through a socketpair; the client FD
+// is written as a 4-byte little-endian int over the signaling socket.
 //
 //export nb_listen
 func nb_listen(handle C.int, net_type *C.char, addr *C.char) C.int {
@@ -297,7 +329,7 @@ func nb_listen(handle C.int, net_type *C.char, addr *C.char) C.int {
 	goAddr := C.GoString(addr)
 
 	if goNet != "tcp" {
-		return -1
+		return setError(handle, fmt.Errorf("unsupported network type: %q", goNet))
 	}
 
 	listener, err := cs.client.ListenTCP(goAddr)
@@ -325,14 +357,20 @@ func nb_errmsg(handle C.int, buf *C.char, buf_len C.int) {
 		return
 	}
 
+	cs.mu.Lock()
 	msg := cs.lastErr
+	cs.mu.Unlock()
+
 	if msg == "" {
 		msg = "no error"
 	}
+	writeCString(msg, buf, buf_len)
+}
 
+func writeCString(msg string, buf *C.char, bufLen C.int) {
 	needed := len(msg) + 1
-	if int(buf_len) < needed {
-		needed = int(buf_len)
+	if int(bufLen) < needed {
+		needed = int(bufLen)
 		msg = msg[:needed-1]
 	}
 
@@ -353,8 +391,12 @@ func nb_free(handle C.int) {
 	handleMu.Unlock()
 
 	if ok {
-		if cs.cancel != nil {
-			cs.cancel()
+		cs.mu.Lock()
+		cancel := cs.cancel
+		cs.mu.Unlock()
+
+		if cancel != nil {
+			cancel()
 		}
 		cs.client.Stop(context.Background())
 	}

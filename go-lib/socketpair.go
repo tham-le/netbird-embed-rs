@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
 	"os"
@@ -8,7 +9,6 @@ import (
 )
 
 // createSocketPair creates a Unix socketpair and returns the two FDs.
-// The caller is responsible for closing both ends.
 func createSocketPair() ([2]int, error) {
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
@@ -39,8 +39,9 @@ func pumpConnection(conn net.Conn, fd int) {
 	<-done
 }
 
-// acceptLoop accepts connections from a listener and pumps them through socketpairs.
-// The accepted FDs are written to the signaling socket.
+// acceptLoop accepts connections from a listener and pumps each through a socketpair.
+// For each accepted connection, it writes the client-side FD as a 4-byte little-endian
+// integer over the signaling socket. The Rust side reads these integers to obtain FDs.
 func acceptLoop(listener net.Listener, sigFd int) {
 	defer listener.Close()
 	sigFile := os.NewFile(uintptr(sigFd), "signal-sock")
@@ -60,18 +61,15 @@ func acceptLoop(listener net.Listener, sigFd int) {
 
 		go pumpConnection(conn, fds[0])
 
-		// Send the client FD over the signaling socket using SCM_RIGHTS
-		err = sendFd(sigFile, fds[1])
-		syscall.Close(fds[1]) // We've sent it, close our copy
+		// Write the client FD as a 4-byte LE integer over the signaling socket
+		var fdBuf [4]byte
+		binary.LittleEndian.PutUint32(fdBuf[:], uint32(fds[1]))
+		_, err = sigFile.Write(fdBuf[:])
 		if err != nil {
-			conn.Close()
+			syscall.Close(fds[1])
 			continue
 		}
+		// FD ownership stays with this process — Rust reads the integer and
+		// uses it directly (both sides share the same process).
 	}
-}
-
-// sendFd sends a file descriptor over a Unix socket using SCM_RIGHTS.
-func sendFd(sock *os.File, fd int) error {
-	rights := syscall.UnixRights(fd)
-	return syscall.Sendmsg(int(sock.Fd()), []byte{0}, rights, nil, 0)
 }
