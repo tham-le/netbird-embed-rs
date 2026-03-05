@@ -2,17 +2,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("failed to create NetBird client")]
-    Create,
+    #[error("failed to create NetBird client: {0}")]
+    Create(String),
 
     #[error("failed to start NetBird client")]
     Start,
 
     #[error("failed to stop NetBird client")]
     Stop,
-
-    #[error("invalid handle")]
-    InvalidHandle,
 
     #[error("buffer too small for response")]
     BufferTooSmall,
@@ -28,4 +25,7 @@ pub enum Error {
 
     #[error("listen failed")]
     Listen,
+
+    #[error("string contains interior NUL byte")]
+    InteriorNul,
 }

@@ -11,7 +11,6 @@ use std::os::raw::{c_char, c_int};
 use std::os::unix::io::{FromRawFd, RawFd};
 
 const INITIAL_BUF_SIZE: usize = 4096;
-const ERANGE: c_int = 34;
 
 /// Options for creating a NetBird embedded client.
 #[derive(Debug, Default)]
@@ -29,23 +28,25 @@ pub struct ClientOptions {
 /// A NetBird embedded client.
 ///
 /// Wraps a Go `client/embed.Client` via FFI integer handle.
-/// The client is stopped and freed on drop.
+/// The client is stopped and freed on drop. Note that drop may block
+/// while the Go runtime shuts down the WireGuard tunnel.
 pub struct Client {
     handle: c_int,
 }
 
-// SAFETY: The Go side uses a mutex-protected map for all handle access.
-// The Client handle is just an integer ID, and all Go operations are thread-safe.
+// SAFETY: The Go side protects the handle map with `handleMu` and each
+// client's mutable state (`lastErr`, `cancel`) with a per-client `mu`.
+// The handle is just an integer ID — all Go operations are thread-safe.
 unsafe impl Send for Client {}
 unsafe impl Sync for Client {}
 
 impl Client {
     /// Create a new NetBird client with the given options.
     pub fn new(opts: ClientOptions) -> Result<Self, Error> {
-        let setup_key = optional_cstring(opts.setup_key.as_deref());
-        let management_url = optional_cstring(opts.management_url.as_deref());
-        let device_name = optional_cstring(opts.device_name.as_deref());
-        let token = optional_cstring(opts.token.as_deref());
+        let setup_key = make_cstring(opts.setup_key.as_deref())?;
+        let management_url = make_cstring(opts.management_url.as_deref())?;
+        let device_name = make_cstring(opts.device_name.as_deref())?;
+        let token = make_cstring(opts.token.as_deref())?;
 
         let handle = unsafe {
             ffi::nb_new(
@@ -57,7 +58,7 @@ impl Client {
         };
 
         if handle < 0 {
-            return Err(Error::Create);
+            return Err(Error::Create(create_error_msg()));
         }
 
         Ok(Self { handle })
@@ -95,12 +96,15 @@ impl Client {
         Ok(serde_json::from_str(&json)?)
     }
 
-    /// Dial a peer over the mesh network, returning a TCP stream.
+    /// Dial a peer over the mesh network, returning a Unix stream.
+    ///
+    /// The returned stream is one end of a socketpair; the Go runtime
+    /// pumps data between the other end and the mesh connection.
     ///
     /// `addr` should be in `"host:port"` format using the overlay IP.
     #[cfg(unix)]
-    pub fn dial_tcp(&self, addr: &str) -> Result<std::net::TcpStream, Error> {
-        let net_type = CString::new("tcp").expect("static string");
+    pub fn dial(&self, network: &str, addr: &str) -> Result<std::os::unix::net::UnixStream, Error> {
+        let net_type = CString::new(network).map_err(|_| Error::Dial)?;
         let c_addr = CString::new(addr).map_err(|_| Error::Dial)?;
 
         let fd = unsafe { ffi::nb_dial(self.handle, net_type.as_ptr(), c_addr.as_ptr()) };
@@ -109,14 +113,17 @@ impl Client {
         }
 
         // SAFETY: Go gave us ownership of this FD via socketpair.
-        Ok(unsafe { std::net::TcpStream::from_raw_fd(fd as RawFd) })
+        Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd as RawFd) })
     }
 
-    /// Listen on a mesh address, returning a TCP listener.
+    /// Listen on a mesh address, returning a listener that yields Unix streams.
+    ///
+    /// The returned [`Listener`] reads accepted connection FDs from the Go
+    /// accept loop over a signaling socketpair.
     ///
     /// `addr` should be in `":port"` or `"host:port"` format.
     #[cfg(unix)]
-    pub fn listen_tcp(&self, addr: &str) -> Result<std::net::TcpListener, Error> {
+    pub fn listen(&self, addr: &str) -> Result<Listener, Error> {
         let net_type = CString::new("tcp").expect("static string");
         let c_addr = CString::new(addr).map_err(|_| Error::Listen)?;
 
@@ -125,8 +132,9 @@ impl Client {
             return Err(self.last_error_or(Error::Listen));
         }
 
-        // SAFETY: Go gave us ownership of this FD via socketpair.
-        Ok(unsafe { std::net::TcpListener::from_raw_fd(fd as RawFd) })
+        // SAFETY: Go gave us ownership of this signaling FD via socketpair.
+        let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd as RawFd) };
+        Ok(Listener { signal: stream })
     }
 
     fn last_error(&self) -> Option<String> {
@@ -165,7 +173,7 @@ impl Client {
                 return Ok(cstr_from_buf(&buf));
             }
 
-            if rc == ERANGE {
+            if rc == libc::ERANGE as c_int {
                 size *= 2;
                 if size > 1024 * 1024 {
                     return Err(Error::BufferTooSmall);
@@ -181,6 +189,37 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         unsafe { ffi::nb_free(self.handle) };
+    }
+}
+
+/// A mesh network listener that yields Unix streams for accepted connections.
+///
+/// The Go accept loop sends accepted connection FDs as 4-byte LE integers
+/// over a signaling socketpair. This type reads those integers and wraps
+/// the FDs as `UnixStream`s.
+#[cfg(unix)]
+pub struct Listener {
+    signal: std::os::unix::net::UnixStream,
+}
+
+#[cfg(unix)]
+impl Listener {
+    /// Accept the next connection from the mesh listener.
+    ///
+    /// Blocks until a connection is available or the listener is closed.
+    pub fn accept(&self) -> Result<std::os::unix::net::UnixStream, Error> {
+        use std::io::Read;
+
+        let mut fd_buf = [0u8; 4];
+        (&self.signal)
+            .read_exact(&mut fd_buf)
+            .map_err(|_| Error::Listen)?;
+        let fd = u32::from_le_bytes(fd_buf) as RawFd;
+
+        // SAFETY: Go created this FD via socketpair and sent the integer
+        // over the signal socket. Both sides are in the same process, so
+        // the FD is valid. Ownership is transferred to us.
+        Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) })
     }
 }
 
@@ -216,7 +255,7 @@ pub struct Peer {
     /// Peer's FQDN on the mesh.
     #[serde(default)]
     pub fqdn: String,
-    /// Connection status: "connected", "disconnected", or "unknown".
+    /// Connection status: "connected" or "disconnected".
     pub conn_status: String,
     /// Whether the connection is relayed (not direct P2P).
     #[serde(default)]
@@ -232,8 +271,24 @@ impl Peer {
     }
 }
 
-fn optional_cstring(s: Option<&str>) -> Option<CString> {
-    s.and_then(|s| CString::new(s).ok())
+fn create_error_msg() -> String {
+    let mut buf = vec![0u8; 512];
+    unsafe {
+        ffi::nb_create_errmsg(buf.as_mut_ptr() as *mut c_char, buf.len() as c_int);
+    }
+    let msg = cstr_from_buf(&buf);
+    if msg.is_empty() || msg == "no error" {
+        "unknown error".into()
+    } else {
+        msg
+    }
+}
+
+fn make_cstring(s: Option<&str>) -> Result<Option<CString>, Error> {
+    match s {
+        Some(s) => CString::new(s).map(Some).map_err(|_| Error::InteriorNul),
+        None => Ok(None),
+    }
 }
 
 fn cstr_ptr(s: &Option<CString>) -> *const c_char {

@@ -117,6 +117,8 @@ unsafe extern "C" {
         token: *const c_char,
     ) -> c_int;
 
+    pub fn nb_create_errmsg(buf: *mut c_char, buf_len: c_int);
+
     pub fn nb_start(handle: c_int) -> c_int;
 
     pub fn nb_stop(handle: c_int) -> c_int;
