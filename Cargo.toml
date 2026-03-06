@@ -3,7 +3,10 @@ name = "netbird-embed"
 version = "0.1.0"
 edition = "2021"
 description = "Rust bindings for NetBird's client/embed via Go C-shared FFI"
-license = "MIT OR Apache-2.0"
+license = "BSD-3-Clause"
+repository = "https://github.com/tham-le/netbird-embed-rs"
+keywords = ["netbird", "wireguard", "mesh", "vpn", "ffi"]
+categories = ["network-programming"]
 
 [dependencies]
 libc = "0.2"

@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-netbird-embed = { path = "../netbird-embed-rs" }
+netbird-embed = "0.1"
 ```
 
 ```rust
@@ -122,4 +122,4 @@ CC=x86_64-w64-mingw32-gcc cargo build --target x86_64-pc-windows-gnu
 
 ## License
 
-MIT OR Apache-2.0
+BSD-3-Clause (matching [NetBird's client license](https://github.com/netbirdio/netbird/blob/main/LICENSE))
