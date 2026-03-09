@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         management_url: Some(management_url),
         device_name: Some(device_name),
         token: None,
+        wireguard_port: None,
     })?;
 
     println!("Starting client...");
