@@ -23,25 +23,11 @@ pub struct ClientOptions {
     pub device_name: Option<String>,
     /// JWT token for OIDC-based registration.
     pub token: Option<String>,
-    /// WireGuard private key for pre-authenticated registration.
-    pub private_key: Option<String>,
-    /// WireGuard pre-shared key.
-    pub pre_shared_key: Option<String>,
-    /// Log level (e.g., "debug", "info", "warn", "error").
-    pub log_level: Option<String>,
-    /// Path to persistent config file. `None` uses in-memory config.
-    pub config_path: Option<String>,
-    /// Path to DNS state file.
-    pub state_path: Option<String>,
     /// WireGuard listen port. Use `Some(0)` for a random port (avoids conflicts
     /// with other WireGuard instances). `None` uses the NetBird default (51820).
     pub wireguard_port: Option<i32>,
-    /// Disable client routes pushed by management server.
-    pub disable_client_routes: bool,
-    /// Block inbound connections from peers.
-    pub block_inbound: bool,
-    /// Use kernel WireGuard instead of userspace netstack.
-    pub no_userspace: bool,
+    /// WireGuard tunnel MTU. `None` uses the NetBird default (1280).
+    pub mtu: Option<u16>,
 }
 
 /// A NetBird embedded client.
@@ -66,13 +52,9 @@ impl Client {
         let management_url = make_cstring(opts.management_url.as_deref())?;
         let device_name = make_cstring(opts.device_name.as_deref())?;
         let token = make_cstring(opts.token.as_deref())?;
-        let private_key = make_cstring(opts.private_key.as_deref())?;
-        let pre_shared_key = make_cstring(opts.pre_shared_key.as_deref())?;
-        let log_level = make_cstring(opts.log_level.as_deref())?;
-        let config_path = make_cstring(opts.config_path.as_deref())?;
-        let state_path = make_cstring(opts.state_path.as_deref())?;
 
         let wg_port = opts.wireguard_port.unwrap_or(-1);
+        let mtu = opts.mtu.map(|m| m as c_int).unwrap_or(-1);
 
         let handle = unsafe {
             ffi::nb_new(
@@ -80,15 +62,8 @@ impl Client {
                 cstr_ptr(&management_url),
                 cstr_ptr(&device_name),
                 cstr_ptr(&token),
-                cstr_ptr(&private_key),
-                cstr_ptr(&pre_shared_key),
-                cstr_ptr(&log_level),
-                cstr_ptr(&config_path),
-                cstr_ptr(&state_path),
                 wg_port as c_int,
-                opts.disable_client_routes as c_int,
-                opts.block_inbound as c_int,
-                opts.no_userspace as c_int,
+                mtu,
             )
         };
 
@@ -170,37 +145,6 @@ impl Client {
         // SAFETY: Go gave us ownership of this signaling FD via socketpair.
         let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd as RawFd) };
         Ok(Listener { signal: stream })
-    }
-
-    /// Listen for UDP datagrams on a mesh address, returning a datagram socket.
-    ///
-    /// The returned socket is one end of a `SOCK_DGRAM` socketpair; the Go
-    /// runtime pumps datagrams between the other end and the mesh `PacketConn`.
-    /// Message boundaries are preserved.
-    ///
-    /// `addr` should be in `":port"` or `"host:port"` format.
-    #[cfg(unix)]
-    pub fn listen_udp(&self, addr: &str) -> Result<std::os::unix::net::UnixDatagram, Error> {
-        let c_addr = CString::new(addr).map_err(|_| Error::ListenUdp)?;
-
-        let fd = unsafe { ffi::nb_listen_udp(self.handle, c_addr.as_ptr()) };
-        if fd < 0 {
-            return Err(self.last_error_or(Error::ListenUdp));
-        }
-
-        // SAFETY: Go gave us ownership of this FD via SOCK_DGRAM socketpair.
-        Ok(unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd as RawFd) })
-    }
-
-    /// Change the runtime log level (e.g., "debug", "info", "warn", "error").
-    pub fn set_log_level(&self, level: &str) -> Result<(), Error> {
-        let c_level = CString::new(level).map_err(|_| Error::SetLogLevel)?;
-
-        let rc = unsafe { ffi::nb_set_log_level(self.handle, c_level.as_ptr()) };
-        if rc != 0 {
-            return Err(self.last_error_or(Error::SetLogLevel));
-        }
-        Ok(())
     }
 
     /// Start a localhost TCP+UDP proxy forwarding to the given target
@@ -295,10 +239,6 @@ impl Drop for Client {
 }
 
 /// A mesh network listener that yields Unix streams for accepted connections.
-///
-/// The Go accept loop sends accepted connection FDs as 4-byte LE integers
-/// over a signaling socketpair. This type reads those integers and wraps
-/// the FDs as `UnixStream`s.
 #[cfg(unix)]
 pub struct Listener {
     signal: std::os::unix::net::UnixStream,
@@ -328,9 +268,6 @@ impl Listener {
 /// Full client status including local peer info and connected peers.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Status {
-    /// Overall connection state: "connected", "connecting", or "disconnected".
-    #[serde(default)]
-    pub state: String,
     /// Local overlay IP address.
     pub ip: String,
     /// Local WireGuard public key.
@@ -360,7 +297,7 @@ pub struct Peer {
     /// Peer's FQDN on the mesh.
     #[serde(default)]
     pub fqdn: String,
-    /// Connection status: "connected", "connecting", or "disconnected".
+    /// Connection status: "connected" or "disconnected".
     pub conn_status: String,
     /// Whether the connection is relayed (not direct P2P).
     #[serde(default)]
@@ -373,10 +310,6 @@ pub struct Peer {
 impl Peer {
     pub fn is_connected(&self) -> bool {
         self.conn_status == "connected"
-    }
-
-    pub fn is_connecting(&self) -> bool {
-        self.conn_status == "connecting"
     }
 }
 

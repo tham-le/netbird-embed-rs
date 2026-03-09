@@ -104,8 +104,7 @@ fn header_name(name: &str, goos: &str) -> String {
 fn generate_ffi_bindings(_header_path: &Path, out_dir: &Path) {
     let bindings_path = out_dir.join("ffi_bindings.rs");
 
-    // Use a minimal manual binding generation since bindgen may not be available.
-    // The Go C-shared header is simple enough to handle manually.
+    // Manual FFI bindings matching the Go C-shared exports.
     let bindings = r#"// Auto-generated FFI bindings for libnetbird_embed
 // Do not edit manually.
 
@@ -117,15 +116,8 @@ unsafe extern "C" {
         management_url: *const c_char,
         device_name: *const c_char,
         token: *const c_char,
-        private_key: *const c_char,
-        pre_shared_key: *const c_char,
-        log_level: *const c_char,
-        config_path: *const c_char,
-        state_path: *const c_char,
         wireguard_port: c_int,
-        disable_client_routes: c_int,
-        block_inbound: c_int,
-        no_userspace: c_int,
+        mtu: c_int,
     ) -> c_int;
 
     pub fn nb_create_errmsg(buf: *mut c_char, buf_len: c_int);
@@ -141,10 +133,6 @@ unsafe extern "C" {
     pub fn nb_dial(handle: c_int, net_type: *const c_char, addr: *const c_char) -> c_int;
 
     pub fn nb_listen(handle: c_int, net_type: *const c_char, addr: *const c_char) -> c_int;
-
-    pub fn nb_listen_udp(handle: c_int, addr: *const c_char) -> c_int;
-
-    pub fn nb_set_log_level(handle: c_int, level: *const c_char) -> c_int;
 
     pub fn nb_errmsg(handle: c_int, buf: *mut c_char, buf_len: c_int);
 
