@@ -218,28 +218,36 @@ func reverseProxyUDPForwardLoop(meshConn net.PacketConn, localTarget string) {
 	}
 	defer localConn.Close()
 
+	var peerAddr net.Addr
+	var mu sync.Mutex
+
 	// mesh -> local
 	go func() {
 		buf := make([]byte, 65536)
 		for {
-			n, _, err := meshConn.ReadFrom(buf)
+			n, addr, err := meshConn.ReadFrom(buf)
 			if err != nil {
 				return
 			}
+			mu.Lock()
+			peerAddr = addr
+			mu.Unlock()
 			localConn.Write(buf[:n])
 		}
 	}()
 
-	// local -> mesh (not needed for server-initiated UDP, but included for completeness)
+	// local -> mesh
 	buf := make([]byte, 65536)
 	for {
 		n, err := localConn.Read(buf)
 		if err != nil {
 			return
 		}
-		// PacketConn needs WriteTo, but we don't know the remote mesh addr.
-		// For QUIC, the server sends responses on the same connection, so
-		// this direction isn't used in practice for reverse proxy.
-		_ = n
+		mu.Lock()
+		addr := peerAddr
+		mu.Unlock()
+		if addr != nil {
+			meshConn.WriteTo(buf[:n], addr)
+		}
 	}
 }
