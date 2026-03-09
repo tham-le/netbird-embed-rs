@@ -26,6 +26,12 @@ pub enum Error {
     #[error("listen failed")]
     Listen,
 
+    #[error("UDP listen failed")]
+    ListenUdp,
+
+    #[error("set log level failed")]
+    SetLogLevel,
+
     #[error("proxy failed")]
     Proxy,
 
