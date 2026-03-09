@@ -13,7 +13,15 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
 	"github.com/netbirdio/netbird/client/embed"
+	"github.com/netbirdio/netbird/client/ssh"
+	"github.com/netbirdio/netbird/client/system"
+	mgm "github.com/netbirdio/netbird/shared/management/client"
+	"github.com/netbirdio/netbird/shared/management/domain"
 )
 
 var (
@@ -24,10 +32,13 @@ var (
 )
 
 type clientState struct {
-	mu      sync.Mutex
-	client  *embed.Client
-	cancel  context.CancelFunc
-	lastErr string
+	mu           sync.Mutex
+	client       *embed.Client
+	cancel       context.CancelFunc
+	lastErr      string
+	proxyCleanup []func()
+	setupKey     string
+	jwtToken     string
 }
 
 func getClient(handle C.int) (*clientState, bool) {
@@ -62,7 +73,7 @@ func writeJSON(data []byte, buf *C.char, bufLen C.int) C.int {
 // On failure, use nb_create_errmsg to retrieve the error.
 //
 //export nb_new
-func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char, wireguard_port C.int) C.int {
+func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char, wireguard_port C.int, mtu C.int) C.int {
 	opts := embed.Options{}
 
 	if setup_key != nil {
@@ -91,6 +102,11 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 		opts.WireguardPort = &port
 	}
 
+	// TODO: MTU configuration requires upstream change to embed.Options.
+	// The config file approach was clobbering other options (setup key, etc).
+	// For now, MTU uses the NetBird default (1280).
+	_ = mtu
+
 	client, err := embed.New(opts)
 	if err != nil {
 		handleMu.Lock()
@@ -103,7 +119,11 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 	defer handleMu.Unlock()
 	handle := nextID
 	nextID++
-	clients[handle] = &clientState{client: client}
+	clients[handle] = &clientState{
+		client:   client,
+		setupKey: opts.SetupKey,
+		jwtToken: opts.JWTToken,
+	}
 	return handle
 }
 
@@ -121,6 +141,59 @@ func nb_create_errmsg(buf *C.char, buf_len C.int) {
 	writeCString(msg, buf, buf_len)
 }
 
+// preRegisterPeer registers the peer with the management server using direct
+// gRPC calls. This bypasses the embed library's auth.Login() two-step flow
+// (Login probe → Register) which can fail due to a server-side error handling
+// bug where certain internal errors get mapped to codes.Internal, causing
+// infinite reconnect retries.
+//
+// After pre-registration, embed.Client.Start() will find the peer already
+// registered and proceed directly to engine startup.
+func preRegisterPeer(client *embed.Client, setupKey string) error {
+	config, err := client.GetConfig()
+	if err != nil {
+		return fmt.Errorf("get config: %w", err)
+	}
+
+	wgKey, err := wgtypes.ParseKey(config.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("parse wg key: %w", err)
+	}
+
+	pubSSHKey, err := ssh.GeneratePublicKey([]byte(config.SSHKey))
+	if err != nil {
+		return fmt.Errorf("generate ssh pub key: %w", err)
+	}
+
+	validSetupKey, err := uuid.Parse(setupKey)
+	if err != nil {
+		return fmt.Errorf("parse setup key: %w", err)
+	}
+
+	mgmTLS := config.ManagementURL.Scheme == "https"
+	mgmClient, err := mgm.NewClient(context.Background(), config.ManagementURL.Host, wgKey, mgmTLS)
+	if err != nil {
+		return fmt.Errorf("mgm client: %w", err)
+	}
+	defer mgmClient.Close()
+
+	serverKey, err := mgmClient.GetServerPublicKey()
+	if err != nil {
+		return fmt.Errorf("get server key: %w", err)
+	}
+
+	sysInfo := system.GetInfo(context.Background())
+	var dnsLabels domain.List
+
+	_, err = mgmClient.Register(*serverKey, validSetupKey.String(), "", sysInfo, pubSSHKey, dnsLabels)
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	log.Info("peer pre-registered successfully")
+	return nil
+}
+
 // nb_start starts the NetBird client (joins the mesh).
 // Returns 0 on success, -1 on error.
 //
@@ -129,6 +202,17 @@ func nb_start(handle C.int) C.int {
 	cs, ok := getClient(handle)
 	if !ok {
 		return -1
+	}
+
+	// Pre-register with direct gRPC to avoid auth.Login() two-step bug
+	cs.mu.Lock()
+	setupKey := cs.setupKey
+	cs.mu.Unlock()
+
+	if setupKey != "" {
+		if err := preRegisterPeer(cs.client, setupKey); err != nil {
+			log.Warnf("pre-registration failed (may already be registered): %v", err)
+		}
 	}
 
 	cs.mu.Lock()
@@ -158,7 +242,13 @@ func nb_stop(handle C.int) C.int {
 
 	cs.mu.Lock()
 	cancel := cs.cancel
+	cleanups := cs.proxyCleanup
+	cs.proxyCleanup = nil
 	cs.mu.Unlock()
+
+	for _, fn := range cleanups {
+		fn()
+	}
 
 	if cancel != nil {
 		cancel()
@@ -398,7 +488,13 @@ func nb_free(handle C.int) {
 	if ok {
 		cs.mu.Lock()
 		cancel := cs.cancel
+		cleanups := cs.proxyCleanup
+		cs.proxyCleanup = nil
 		cs.mu.Unlock()
+
+		for _, fn := range cleanups {
+			fn()
+		}
 
 		if cancel != nil {
 			cancel()

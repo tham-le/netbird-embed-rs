@@ -26,6 +26,9 @@ pub struct ClientOptions {
     /// WireGuard listen port. Use `Some(0)` for a random port (avoids conflicts
     /// with other WireGuard instances). `None` uses the NetBird default (51820).
     pub wireguard_port: Option<i32>,
+    /// WireGuard tunnel MTU. `None` uses the NetBird default (1280).
+    /// Set higher (e.g., 1400) if QUIC packets exceed the default MTU.
+    pub mtu: Option<u16>,
 }
 
 /// A NetBird embedded client.
@@ -52,6 +55,7 @@ impl Client {
         let token = make_cstring(opts.token.as_deref())?;
 
         let wg_port = opts.wireguard_port.unwrap_or(-1);
+        let mtu = opts.mtu.map(|m| m as c_int).unwrap_or(-1);
 
         let handle = unsafe {
             ffi::nb_new(
@@ -60,6 +64,7 @@ impl Client {
                 cstr_ptr(&device_name),
                 cstr_ptr(&token),
                 wg_port as c_int,
+                mtu,
             )
         };
 
@@ -141,6 +146,43 @@ impl Client {
         // SAFETY: Go gave us ownership of this signaling FD via socketpair.
         let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd as RawFd) };
         Ok(Listener { signal: stream })
+    }
+
+    /// Start a localhost TCP+UDP proxy forwarding to the given target
+    /// address through the mesh netstack.
+    ///
+    /// Returns the local port that the proxy is listening on.
+    /// Both TCP and UDP are proxied on the same port.
+    ///
+    /// `target` should be `"host:port"` using the peer's overlay IP.
+    pub fn start_proxy(&self, target: &str) -> Result<u16, Error> {
+        let c_target = CString::new(target).map_err(|_| Error::Proxy)?;
+
+        let port = unsafe { ffi::nb_proxy(self.handle, c_target.as_ptr()) };
+        if port < 0 {
+            return Err(self.last_error_or(Error::Proxy));
+        }
+
+        Ok(port as u16)
+    }
+
+    /// Start a reverse proxy: listen on `mesh_port` inside the mesh netstack
+    /// and forward incoming connections to `local_addr` on the OS network.
+    ///
+    /// This allows mesh peers to reach an OS-level service (e.g. a web server
+    /// on `localhost:8080`) through the overlay network, even in userspace
+    /// netstack mode where overlay IPs are not routable by OS sockets.
+    pub fn start_reverse_proxy(&self, mesh_port: u16, local_addr: &str) -> Result<(), Error> {
+        let c_local = CString::new(local_addr).map_err(|_| Error::Proxy)?;
+
+        let rc = unsafe {
+            ffi::nb_reverse_proxy(self.handle, mesh_port as c_int, c_local.as_ptr())
+        };
+        if rc != 0 {
+            return Err(self.last_error_or(Error::Proxy));
+        }
+
+        Ok(())
     }
 
     fn last_error(&self) -> Option<String> {

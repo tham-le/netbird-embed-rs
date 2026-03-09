@@ -2,7 +2,12 @@ module github.com/kyber-labs/netbird-embed-rs/go-lib
 
 go 1.25
 
-require github.com/netbirdio/netbird v0.66.2
+require (
+	github.com/google/uuid v1.6.0
+	github.com/netbirdio/netbird v0.65.3
+	github.com/sirupsen/logrus v1.9.3
+	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
+)
 
 require (
 	cunicu.li/go-rosenpass v0.4.0 // indirect
@@ -39,7 +44,6 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/nftables v0.3.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gopacket/gopacket v1.1.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -77,7 +81,6 @@ require (
 	github.com/quic-go/quic-go v0.55.0 // indirect
 	github.com/shirou/gopsutil/v3 v3.24.4 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
 	github.com/things-go/go-socks5 v0.0.4 // indirect
 	github.com/ti-mo/conntrack v0.5.1 // indirect
@@ -104,7 +107,6 @@ require (
 	golang.org/x/tools v0.39.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20230704135630-469159ecf7d1 // indirect
-	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251124214823-79d6a2a48846 // indirect
 	google.golang.org/grpc v1.77.0 // indirect
