@@ -62,7 +62,7 @@ func writeJSON(data []byte, buf *C.char, bufLen C.int) C.int {
 // On failure, use nb_create_errmsg to retrieve the error.
 //
 //export nb_new
-func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char) C.int {
+func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char, wireguard_port C.int) C.int {
 	opts := embed.Options{}
 
 	if setup_key != nil {
@@ -84,6 +84,11 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 		if t := C.GoString(token); t != "" {
 			opts.JWTToken = t
 		}
+	}
+
+	if wireguard_port >= 0 {
+		port := int(wireguard_port)
+		opts.WireguardPort = &port
 	}
 
 	client, err := embed.New(opts)

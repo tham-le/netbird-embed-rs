@@ -23,6 +23,9 @@ pub struct ClientOptions {
     pub device_name: Option<String>,
     /// JWT token for OIDC-based registration.
     pub token: Option<String>,
+    /// WireGuard listen port. Use `Some(0)` for a random port (avoids conflicts
+    /// with other WireGuard instances). `None` uses the NetBird default (51820).
+    pub wireguard_port: Option<i32>,
 }
 
 /// A NetBird embedded client.
@@ -48,12 +51,15 @@ impl Client {
         let device_name = make_cstring(opts.device_name.as_deref())?;
         let token = make_cstring(opts.token.as_deref())?;
 
+        let wg_port = opts.wireguard_port.unwrap_or(-1);
+
         let handle = unsafe {
             ffi::nb_new(
                 cstr_ptr(&setup_key),
                 cstr_ptr(&management_url),
                 cstr_ptr(&device_name),
                 cstr_ptr(&token),
+                wg_port as c_int,
             )
         };
 

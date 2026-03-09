@@ -57,7 +57,8 @@ fn main() {
 
     // Rerun if Go sources change
     println!("cargo:rerun-if-changed=go-lib/netbird_embed.go");
-    println!("cargo:rerun-if-changed=go-lib/socketpair.go");
+    println!("cargo:rerun-if-changed=go-lib/socketpair_unix.go");
+    println!("cargo:rerun-if-changed=go-lib/socketpair_windows.go");
     println!("cargo:rerun-if-changed=go-lib/go.mod");
     println!("cargo:rerun-if-changed=go-lib/go.sum");
 }
@@ -115,6 +116,7 @@ unsafe extern "C" {
         management_url: *const c_char,
         device_name: *const c_char,
         token: *const c_char,
+        wireguard_port: c_int,
     ) -> c_int;
 
     pub fn nb_create_errmsg(buf: *mut c_char, buf_len: c_int);
