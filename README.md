@@ -6,9 +6,12 @@ Embeds a full NetBird node (WireGuard mesh networking) into any Rust application
 
 ## Requirements
 
-- **Rust** ≥ 1.75
+- **Rust** ≥ 1.85
 - **Go** ≥ 1.25 (builds the C-shared library automatically via `build.rs`)
-- **Linux** (Unix socketpair for `dial`/`listen`; status/peers work on all platforms)
+
+## Cross-platform support
+
+The core API works on **all platforms** (Linux, macOS, Windows). Direct mesh sockets (`dial`/`listen`/`listen_udp`) require Unix (socketpair-based). On Windows, use `start_proxy` to get a localhost port forwarding to a mesh peer.
 
 ## Usage
 
@@ -16,17 +19,19 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-netbird-embed = "0.1"
+netbird-embed = "0.3"
 ```
 
+### Connect and query peers
+
 ```rust
-use netbird_embed::{Client, ClientOptions};
+use netbird_embed::{Client, ClientOptions, ConnectionState};
 
 let client = Client::new(ClientOptions {
     setup_key: Some("YOUR-SETUP-KEY".into()),
     management_url: Some("https://api.netbird.io".into()),
     device_name: Some("my-app".into()),
-    token: None,
+    ..Default::default()
 })?;
 
 client.start()?;
@@ -39,29 +44,51 @@ for peer in client.peers()? {
         println!("{} ({})", peer.fqdn, peer.ip);
     }
 }
+```
 
-// Dial a peer over the mesh — returns a UnixStream (socketpair)
+### Proxy to a peer (cross-platform)
+
+```rust
+// Forward localhost:random → peer's 10.200.0.1:8080 through the mesh
+let port = client.start_proxy("10.200.0.1:8080")?;
+let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+
+// Expose a local service on the mesh (reverse proxy)
+client.start_reverse_proxy(9000, "127.0.0.1:8080")?;
+```
+
+### Direct mesh sockets (Unix only)
+
+```rust
+// Dial a peer — returns a UnixStream (socketpair)
 let stream = client.dial("tcp", "10.200.0.1:8080")?;
 
 // Listen on the mesh — returns a Listener that yields UnixStreams
 let listener = client.listen(":8080")?;
 let conn = listener.accept()?;
+
+// UDP datagrams
+let sock = client.listen_udp(":9000")?;
 ```
 
 The client is automatically stopped and freed on drop.
 
 ## API
 
-| Method | Description |
-|--------|-------------|
-| `Client::new(opts)` | Create a NetBird node |
-| `client.start()` | Join the mesh network |
-| `client.stop()` | Leave the mesh network |
-| `client.status()` | Local peer info, management/signal state, peer list |
-| `client.peers()` | List of known peers with connection status |
-| `client.dial(net, addr)` | Dial a peer, returns `UnixStream` (Unix only) |
-| `client.listen(addr)` | Listen on mesh address, returns `Listener` (Unix only) |
-| `listener.accept()` | Accept next connection, returns `UnixStream` |
+| Method | Platform | Description |
+|--------|----------|-------------|
+| `Client::new(opts)` | All | Create a NetBird node |
+| `client.start()` | All | Join the mesh network |
+| `client.stop()` | All | Leave the mesh network |
+| `client.status()` | All | Local peer info, management/signal state, peer list |
+| `client.peers()` | All | List of known peers with connection status |
+| `client.set_log_level(level)` | All | Change runtime log level |
+| `client.start_proxy(target)` | All | Localhost TCP+UDP proxy → mesh peer, returns port |
+| `client.start_reverse_proxy(port, addr)` | All | Mesh port → localhost service |
+| `client.dial(net, addr)` | Unix | Dial a peer, returns `UnixStream` |
+| `client.listen(addr)` | Unix | Listen on mesh address, returns `Listener` |
+| `client.listen_udp(addr)` | Unix | Listen for UDP datagrams, returns `UnixDatagram` |
+| `listener.accept()` | Unix | Accept next connection, returns `UnixStream` |
 
 ## Architecture
 
@@ -91,6 +118,7 @@ The client is automatically stopped and freed on drop.
 - **Integer handles** — Go GC manages real objects. Rust holds an `i32` handle. No Go pointers cross FFI.
 - **Caller-provided buffers** — Status/peers returned as JSON into Rust-allocated buffers. Returns `ERANGE` if too small; caller retries with larger buffer (handled automatically).
 - **Socketpair for connections** — `dial()` creates a Unix socketpair. Go pumps data between the mesh connection and one end; Rust gets the other as a `UnixStream`.
+- **Proxy for cross-platform** — `start_proxy()` / `start_reverse_proxy()` use Go's own `net.Listen` on localhost, avoiding platform-specific socketpair APIs.
 - **No callbacks** — Status is polled. Avoids cross-runtime threading complexity.
 
 ## Building

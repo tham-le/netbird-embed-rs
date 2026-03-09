@@ -7,12 +7,10 @@ license = "BSD-3-Clause"
 repository = "https://github.com/tham-le/netbird-embed-rs"
 keywords = ["netbird", "wireguard", "mesh", "vpn", "ffi"]
 categories = ["network-programming"]
+rust-version = "1.85"
 
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["full"] }

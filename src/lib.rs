@@ -1,3 +1,41 @@
+//! Rust bindings for [NetBird's `client/embed`](https://github.com/netbirdio/netbird/tree/main/client/embed)
+//! via Go C-shared FFI.
+//!
+//! Embeds a full NetBird node (WireGuard mesh networking) into any Rust
+//! application — no separate VPN client needed.
+//!
+//! # Cross-platform support
+//!
+//! The core API ([`Client::new`], [`Client::start`], [`Client::status`],
+//! [`Client::start_proxy`], etc.) works on all platforms. Direct mesh
+//! sockets ([`Client::dial`], [`Client::listen`], [`Client::listen_udp`])
+//! require Unix (socketpair-based).
+//!
+//! On Windows, use [`Client::start_proxy`] to get a localhost port that
+//! forwards to a mesh peer, then connect with standard sockets.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use netbird_embed::{Client, ClientOptions, ConnectionState};
+//!
+//! let client = Client::new(ClientOptions {
+//!     setup_key: Some("YOUR-SETUP-KEY".into()),
+//!     management_url: Some("https://api.netbird.io".into()),
+//!     ..Default::default()
+//! })?;
+//!
+//! client.start()?;
+//!
+//! let status = client.status()?;
+//! println!("Overlay IP: {}", status.ip);
+//!
+//! // Cross-platform: proxy to a peer's service
+//! let port = client.start_proxy("100.64.0.2:8080")?;
+//! let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
 mod error;
 mod ffi;
 
