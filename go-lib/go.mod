@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/netbirdio/netbird v0.65.3
+	github.com/netbirdio/netbird v0.66.2
 	github.com/sirupsen/logrus v1.9.3
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
 )

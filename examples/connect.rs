@@ -15,8 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup_key: Some(setup_key),
         management_url: Some(management_url),
         device_name: Some(device_name),
-        token: None,
-        wireguard_port: None,
+        ..Default::default()
     })?;
 
     println!("Starting client...");

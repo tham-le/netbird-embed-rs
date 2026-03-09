@@ -73,7 +73,21 @@ func writeJSON(data []byte, buf *C.char, bufLen C.int) C.int {
 // On failure, use nb_create_errmsg to retrieve the error.
 //
 //export nb_new
-func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, token *C.char, wireguard_port C.int, mtu C.int) C.int {
+func nb_new(
+	setup_key *C.char,
+	management_url *C.char,
+	device_name *C.char,
+	token *C.char,
+	private_key *C.char,
+	pre_shared_key *C.char,
+	log_level *C.char,
+	config_path *C.char,
+	state_path *C.char,
+	wireguard_port C.int,
+	disable_client_routes C.int,
+	block_inbound C.int,
+	no_userspace C.int,
+) C.int {
 	opts := embed.Options{}
 
 	if setup_key != nil {
@@ -96,16 +110,40 @@ func nb_new(setup_key *C.char, management_url *C.char, device_name *C.char, toke
 			opts.JWTToken = t
 		}
 	}
+	if private_key != nil {
+		if pk := C.GoString(private_key); pk != "" {
+			opts.PrivateKey = pk
+		}
+	}
+	if pre_shared_key != nil {
+		if psk := C.GoString(pre_shared_key); psk != "" {
+			opts.PreSharedKey = psk
+		}
+	}
+	if log_level != nil {
+		if ll := C.GoString(log_level); ll != "" {
+			opts.LogLevel = ll
+		}
+	}
+	if config_path != nil {
+		if cp := C.GoString(config_path); cp != "" {
+			opts.ConfigPath = cp
+		}
+	}
+	if state_path != nil {
+		if sp := C.GoString(state_path); sp != "" {
+			opts.StatePath = sp
+		}
+	}
 
 	if wireguard_port >= 0 {
 		port := int(wireguard_port)
 		opts.WireguardPort = &port
 	}
 
-	// TODO: MTU configuration requires upstream change to embed.Options.
-	// The config file approach was clobbering other options (setup key, etc).
-	// For now, MTU uses the NetBird default (1280).
-	_ = mtu
+	opts.DisableClientRoutes = disable_client_routes != 0
+	opts.BlockInbound = block_inbound != 0
+	opts.NoUserspace = no_userspace != 0
 
 	client, err := embed.New(opts)
 	if err != nil {
@@ -281,10 +319,14 @@ type PeerInfo struct {
 }
 
 func connStatusStr(s embed.PeerConnStatus) string {
-	if s == embed.PeerStatusConnected {
+	switch s {
+	case embed.PeerStatusConnected:
 		return "connected"
+	case embed.PeerConnStatus(1): // StatusConnecting
+		return "connecting"
+	default:
+		return "disconnected"
 	}
-	return "disconnected"
 }
 
 // nb_status writes the client status as JSON into the caller-provided buffer.
@@ -323,7 +365,15 @@ func nb_status(handle C.int, buf *C.char, buf_len C.int) C.int {
 		sigState = "connected"
 	}
 
+	state := "disconnected"
+	if fullStatus.ManagementState.Connected && fullStatus.SignalState.Connected {
+		state = "connected"
+	} else if fullStatus.ManagementState.Connected || fullStatus.SignalState.Connected {
+		state = "connecting"
+	}
+
 	info := StatusInfo{
+		State:           state,
 		IP:              fullStatus.LocalPeerState.IP,
 		PubKey:          fullStatus.LocalPeerState.PubKey,
 		FQDN:            fullStatus.LocalPeerState.FQDN,
@@ -441,6 +491,53 @@ func nb_listen(handle C.int, net_type *C.char, addr *C.char) C.int {
 	go acceptLoop(listener, fds[0])
 
 	return C.int(fds[1])
+}
+
+// nb_listen_udp starts a UDP listener on a mesh address.
+// Returns a file descriptor on success, -1 on error.
+// Each datagram is forwarded over a SOCK_DGRAM socketpair, preserving
+// message boundaries.
+//
+//export nb_listen_udp
+func nb_listen_udp(handle C.int, addr *C.char) C.int {
+	cs, ok := getClient(handle)
+	if !ok {
+		return -1
+	}
+
+	goAddr := C.GoString(addr)
+
+	packetConn, err := cs.client.ListenUDP(goAddr)
+	if err != nil {
+		return setError(handle, err)
+	}
+
+	fds, err := createDatagramSocketPair()
+	if err != nil {
+		packetConn.Close()
+		return setError(handle, err)
+	}
+
+	go pumpDatagrams(packetConn, fds[0])
+
+	return C.int(fds[1])
+}
+
+// nb_set_log_level changes the runtime log level.
+// Returns 0 on success, -1 on error.
+//
+//export nb_set_log_level
+func nb_set_log_level(handle C.int, level *C.char) C.int {
+	cs, ok := getClient(handle)
+	if !ok {
+		return -1
+	}
+
+	goLevel := C.GoString(level)
+	if err := cs.client.SetLogLevel(goLevel); err != nil {
+		return setError(handle, err)
+	}
+	return 0
 }
 
 // nb_errmsg writes the last error message into the caller-provided buffer.

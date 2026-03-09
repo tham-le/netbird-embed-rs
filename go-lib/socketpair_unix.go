@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 )
 
@@ -39,6 +40,58 @@ func pumpConnection(conn net.Conn, fd int) {
 	}()
 	io.Copy(conn, fileConn)
 	<-done
+}
+
+// createDatagramSocketPair creates a SOCK_DGRAM Unix socketpair that preserves
+// message boundaries for UDP datagram forwarding.
+func createDatagramSocketPair() ([2]int, error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return [2]int{-1, -1}, err
+	}
+	return fds, nil
+}
+
+// pumpDatagrams bidirectionally copies datagrams between a net.PacketConn
+// and a SOCK_DGRAM socketpair FD. Tracks the last sender address so
+// outbound datagrams from the Rust side are routed to the correct peer.
+func pumpDatagrams(meshConn net.PacketConn, fd int) {
+	file := os.NewFile(uintptr(fd), "dgram-socketpair")
+	defer file.Close()
+	defer meshConn.Close()
+
+	var lastAddr net.Addr
+	var mu sync.Mutex
+
+	// mesh -> socketpair
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, addr, err := meshConn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			lastAddr = addr
+			mu.Unlock()
+			file.Write(buf[:n])
+		}
+	}()
+
+	// socketpair -> mesh
+	buf := make([]byte, 65536)
+	for {
+		n, err := file.Read(buf)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		addr := lastAddr
+		mu.Unlock()
+		if addr != nil {
+			meshConn.WriteTo(buf[:n], addr)
+		}
+	}
 }
 
 // acceptLoop accepts connections from a listener and pumps each through a socketpair.
