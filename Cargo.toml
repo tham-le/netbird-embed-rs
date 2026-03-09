@@ -1,6 +1,6 @@
 [package]
 name = "netbird-embed"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Rust bindings for NetBird's client/embed via Go C-shared FFI"
 license = "BSD-3-Clause"
