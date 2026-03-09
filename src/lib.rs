@@ -12,6 +12,18 @@ use std::os::unix::io::{FromRawFd, RawFd};
 
 const INITIAL_BUF_SIZE: usize = 4096;
 
+/// Connection state for the client, management server, or signal server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionState {
+    Connected,
+    Connecting,
+    #[default]
+    Disconnected,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Options for creating a NetBird embedded client.
 #[derive(Debug, Default)]
 pub struct ClientOptions {
@@ -159,10 +171,9 @@ impl Client {
     /// `addr` should be in `":port"` or `"host:port"` format.
     #[cfg(unix)]
     pub fn listen(&self, addr: &str) -> Result<Listener, Error> {
-        let net_type = CString::new("tcp").expect("static string");
         let c_addr = CString::new(addr).map_err(|_| Error::Listen)?;
 
-        let fd = unsafe { ffi::nb_listen(self.handle, net_type.as_ptr(), c_addr.as_ptr()) };
+        let fd = unsafe { ffi::nb_listen(self.handle, c"tcp".as_ptr(), c_addr.as_ptr()) };
         if fd < 0 {
             return Err(self.last_error_or(Error::Listen));
         }
@@ -240,20 +251,7 @@ impl Client {
     }
 
     fn last_error(&self) -> Option<String> {
-        let mut buf = vec![0u8; 512];
-        unsafe {
-            ffi::nb_errmsg(
-                self.handle,
-                buf.as_mut_ptr() as *mut c_char,
-                buf.len() as c_int,
-            );
-        }
-        let msg = cstr_from_buf(&buf);
-        if msg.is_empty() || msg == "no error" {
-            None
-        } else {
-            Some(msg)
-        }
+        read_error_buf(|buf, len| unsafe { ffi::nb_errmsg(self.handle, buf, len) })
     }
 
     fn last_error_or(&self, fallback: Error) -> Error {
@@ -324,9 +322,9 @@ impl Listener {
 /// Full client status including local peer info and connected peers.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Status {
-    /// Overall connection state: "connected", "connecting", or "disconnected".
+    /// Overall connection state.
     #[serde(default)]
-    pub state: String,
+    pub state: ConnectionState,
     /// Local overlay IP address.
     pub ip: String,
     /// Local WireGuard public key.
@@ -335,9 +333,9 @@ pub struct Status {
     #[serde(default)]
     pub fqdn: String,
     /// Management server connection state.
-    pub management_state: String,
+    pub management_state: ConnectionState,
     /// Signal server connection state.
-    pub signal_state: String,
+    pub signal_state: ConnectionState,
     /// Connected peers.
     #[serde(default)]
     pub peers: Vec<Peer>,
@@ -356,8 +354,8 @@ pub struct Peer {
     /// Peer's FQDN on the mesh.
     #[serde(default)]
     pub fqdn: String,
-    /// Connection status: "connected" or "disconnected".
-    pub conn_status: String,
+    /// Connection status.
+    pub conn_status: ConnectionState,
     /// Whether the connection is relayed (not direct P2P).
     #[serde(default)]
     pub relayed: bool,
@@ -368,20 +366,23 @@ pub struct Peer {
 
 impl Peer {
     pub fn is_connected(&self) -> bool {
-        self.conn_status == "connected"
+        self.conn_status == ConnectionState::Connected
     }
 }
 
 fn create_error_msg() -> String {
+    read_error_buf(|buf, len| unsafe { ffi::nb_create_errmsg(buf, len) })
+        .unwrap_or_else(|| "unknown error".into())
+}
+
+fn read_error_buf(f: impl FnOnce(*mut c_char, c_int)) -> Option<String> {
     let mut buf = vec![0u8; 512];
-    unsafe {
-        ffi::nb_create_errmsg(buf.as_mut_ptr() as *mut c_char, buf.len() as c_int);
-    }
+    f(buf.as_mut_ptr() as *mut c_char, buf.len() as c_int);
     let msg = cstr_from_buf(&buf);
     if msg.is_empty() || msg == "no error" {
-        "unknown error".into()
+        None
     } else {
-        msg
+        Some(msg)
     }
 }
 

@@ -1,4 +1,4 @@
-use netbird_embed::{Client, ClientOptions};
+use netbird_embed::{Client, ClientOptions, ConnectionState};
 use std::thread;
 use std::time::Duration;
 
@@ -26,13 +26,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match client.status() {
             Ok(status) => {
                 println!(
-                    "IP: {}, mgmt: {}, signal: {}, peers: {}",
+                    "IP: {}, mgmt: {:?}, signal: {:?}, peers: {}",
                     status.ip,
                     status.management_state,
                     status.signal_state,
                     status.peers.len()
                 );
-                if status.management_state == "connected" {
+                if status.management_state == ConnectionState::Connected {
                     break;
                 }
             }
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(peers) => {
             for peer in &peers {
                 println!(
-                    "  {} ({}) — {} {}",
+                    "  {} ({}) — {:?} {}",
                     peer.fqdn,
                     peer.ip,
                     peer.conn_status,
@@ -61,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("Peers error: {e}"),
     }
 
+    // In production, use a signal handler to call client.stop() before exit.
+    // Drop also stops the client, but may block while the Go runtime shuts down.
     println!("\nPress Ctrl+C to stop...");
     loop {
         thread::sleep(Duration::from_secs(5));

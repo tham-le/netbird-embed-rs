@@ -40,7 +40,7 @@ fn main() {
         panic!("go build failed with status: {status}");
     }
 
-    // Verify the header file was generated
+    // Verify the header file was generated (sanity check for Go build).
     let header_path = out_dir.join(header_name(lib_name, &goos));
     assert!(
         header_path.exists(),
@@ -48,8 +48,7 @@ fn main() {
         header_path.display()
     );
 
-    // Generate Rust FFI bindings from the header
-    generate_ffi_bindings(&header_path, &out_dir);
+    generate_ffi_bindings(&out_dir);
 
     // Tell cargo to link the library
     println!("cargo:rustc-link-search=native={}", out_dir.display());
@@ -101,7 +100,7 @@ fn header_name(name: &str, goos: &str) -> String {
     }
 }
 
-fn generate_ffi_bindings(_header_path: &Path, out_dir: &Path) {
+fn generate_ffi_bindings(out_dir: &Path) {
     let bindings_path = out_dir.join("ffi_bindings.rs");
 
     // Manual FFI bindings matching the Go C-shared exports.
