@@ -12,26 +12,56 @@ fn main() {
     let (goos, goarch) = parse_target(&target);
 
     let lib_name = "netbird_embed";
-    let (lib_file, link_name) = lib_output_name(lib_name, &goos);
+    // Use c-archive (static) on Windows to avoid DllMain thread creation
+    // issues with recent Windows security updates. c-shared (dynamic) on
+    // other platforms.
+    let use_static = goos == "windows";
+    let build_mode = if use_static { "c-archive" } else { "c-shared" };
+    let (lib_file, link_name) = lib_output_name(lib_name, &goos, use_static);
 
-    // Build the Go C-shared library
+    // Build the Go library.
+    // Pin to Go 1.25.x toolchain for gvisor compatibility (Go 1.26 has
+    // build tag conflicts with gvisor's runtime_constants_go125/go126).
+    let go_toolchain =
+        env::var("NETBIRD_GO_TOOLCHAIN").unwrap_or_else(|_| "go1.25.5".to_string());
+
+    // Android needs -checklinkname=0 because wlynxg/anet uses go:linkname
+    // to access net.zoneCache, which Go 1.25 rejects by default.
+    let ldflags = if goos == "android" {
+        "-checklinkname=0"
+    } else {
+        ""
+    };
+
     let mut cmd = Command::new("go");
     cmd.current_dir(&go_lib_dir)
+        .env("GOTOOLCHAIN", &go_toolchain)
         .env("CGO_ENABLED", "1")
         .env("GOOS", &goos)
         .env("GOARCH", &goarch)
-        .arg("build")
-        .arg("-buildmode=c-shared")
+        .arg("build");
+
+    if !ldflags.is_empty() {
+        cmd.arg(format!("-ldflags={ldflags}"));
+    }
+
+    cmd.arg(format!("-buildmode={build_mode}"))
         .arg("-o")
         .arg(out_dir.join(&lib_file))
         .arg(".");
 
-    // Set cross-compiler for Windows targets
+    // Set cross-compiler for cross-compilation targets
     if goos == "windows" {
         if let Ok(cc) = env::var("CC") {
             cmd.env("CC", cc);
         } else {
             cmd.env("CC", "x86_64-w64-mingw32-gcc");
+        }
+    } else if goos == "android" {
+        if let Ok(cc) = env::var("TARGET_CC") {
+            cmd.env("CC", cc);
+        } else if let Ok(cc) = env::var("CC") {
+            cmd.env("CC", cc);
         }
     }
 
@@ -52,7 +82,17 @@ fn main() {
 
     // Tell cargo to link the library
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=dylib={link_name}");
+    if use_static {
+        println!("cargo:rustc-link-lib=static={link_name}");
+        // Go runtime dependencies on Windows
+        println!("cargo:rustc-link-lib=dylib=winmm");
+        println!("cargo:rustc-link-lib=dylib=ws2_32");
+        println!("cargo:rustc-link-lib=dylib=ntdll");
+        println!("cargo:rustc-link-lib=dylib=iphlpapi");
+        println!("cargo:rustc-link-lib=dylib=userenv");
+    } else {
+        println!("cargo:rustc-link-lib=dylib={link_name}");
+    }
 
     // Rerun if Go sources change
     println!("cargo:rerun-if-changed=go-lib/netbird_embed.go");
@@ -70,6 +110,8 @@ fn parse_target(target: &str) -> (String, String) {
         "windows"
     } else if target.contains("darwin") || target.contains("apple") {
         "darwin"
+    } else if target.contains("android") {
+        "android"
     } else {
         "linux"
     };
@@ -85,7 +127,10 @@ fn parse_target(target: &str) -> (String, String) {
     (os_part.to_string(), goarch.to_string())
 }
 
-fn lib_output_name(name: &str, goos: &str) -> (String, String) {
+fn lib_output_name(name: &str, goos: &str, use_static: bool) -> (String, String) {
+    if use_static {
+        return (format!("lib{name}.a"), name.to_string());
+    }
     match goos {
         "windows" => (format!("{name}.dll"), name.to_string()),
         "darwin" => (format!("lib{name}.dylib"), name.to_string()),
@@ -93,11 +138,8 @@ fn lib_output_name(name: &str, goos: &str) -> (String, String) {
     }
 }
 
-fn header_name(name: &str, goos: &str) -> String {
-    match goos {
-        "windows" => format!("{name}.h"),
-        _ => format!("lib{name}.h"),
-    }
+fn header_name(name: &str, _goos: &str) -> String {
+    format!("lib{name}.h")
 }
 
 fn generate_ffi_bindings(out_dir: &Path) {

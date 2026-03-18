@@ -4,6 +4,15 @@ package main
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+static void android_log(const char *msg) {
+    __android_log_write(4, "KYVPN_GO", msg);
+}
+#else
+static void android_log(const char *msg) { (void)msg; }
+#endif
 */
 import "C"
 import (
@@ -11,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -30,6 +40,24 @@ var (
 	nextID        C.int = 1
 	lastCreateErr string
 )
+
+func alog(msg string) {
+	cs := C.CString(msg)
+	C.android_log(cs)
+	C.free(unsafe.Pointer(cs))
+}
+
+// logWriter sends logrus output to Android logcat.
+type logWriter struct{}
+
+func (logWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
+		msg = msg[:len(msg)-1]
+	}
+	alog(msg)
+	return len(p), nil
+}
 
 type clientState struct {
 	mu           sync.Mutex
@@ -145,7 +173,9 @@ func nb_new(
 	opts.BlockInbound = block_inbound != 0
 	opts.NoUserspace = no_userspace != 0
 
+	alog("nb_new: calling embed.New()")
 	client, err := embed.New(opts)
+	alog(fmt.Sprintf("nb_new: embed.New() returned err=%v", err))
 	if err != nil {
 		handleMu.Lock()
 		lastCreateErr = err.Error()
@@ -248,23 +278,38 @@ func nb_start(handle C.int) C.int {
 	cs.mu.Unlock()
 
 	if setupKey != "" {
+		alog("nb_start: pre-registering peer")
 		if err := preRegisterPeer(cs.client, setupKey); err != nil {
-			log.Warnf("pre-registration failed (may already be registered): %v", err)
+			alog(fmt.Sprintf("nb_start: pre-registration failed: %v", err))
+		} else {
+			alog("nb_start: pre-registration OK")
 		}
 	}
 
 	cs.mu.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
+	// 30s timeout for Start() — prevents hanging forever on Android
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	cs.cancel = cancel
 	cs.mu.Unlock()
 
-	if err := cs.client.Start(ctx); err != nil {
+	// Set up logrus to output to Android logcat
+	log.SetOutput(logWriter{})
+	log.SetLevel(log.InfoLevel)
+
+	alog("nb_start: pre-registration done, calling Start()")
+
+	var startErr error
+	startErr = cs.client.Start(ctx)
+	alog(fmt.Sprintf("nb_start: Start() returned, err=%v", startErr))
+	if startErr != nil {
+		alog(fmt.Sprintf("nb_start: Start() error: %v", startErr))
 		cs.mu.Lock()
 		cs.cancel = nil
 		cs.mu.Unlock()
 		cancel()
-		return setError(handle, err)
+		return setError(handle, startErr)
 	}
+	alog("nb_start: Start() success")
 	return 0
 }
 
