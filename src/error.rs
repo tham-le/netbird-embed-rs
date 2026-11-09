@@ -29,11 +29,26 @@ pub enum Error {
     #[error("UDP listen failed")]
     ListenUdp,
 
+    #[error("UDP dial failed")]
+    DialUdp,
+
     #[error("set log level failed")]
     SetLogLevel,
 
     #[error("proxy failed")]
     Proxy,
+
+    #[error("set performance failed")]
+    SetPerformance,
+
+    #[error("identity lookup failed")]
+    Identity,
+
+    #[error("expose failed")]
+    Expose,
+
+    #[error("capture failed")]
+    Capture,
 
     #[error("string contains interior NUL byte")]
     InteriorNul,

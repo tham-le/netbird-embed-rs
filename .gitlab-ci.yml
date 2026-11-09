@@ -5,7 +5,8 @@ variables:
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
   GOPATH: "${CI_PROJECT_DIR}/.go"
   GOMODCACHE: "${CI_PROJECT_DIR}/.go/pkg/mod"
-  GO_VERSION: "1.25.7"
+  GO_VERSION: "1.26.10"
+  GO_SHA256: "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
 
 cache:
   key: "${CI_COMMIT_REF_SLUG}"
@@ -17,10 +18,12 @@ cache:
 
 check:
   stage: check
-  image: rust:1.89
+  # rust:1.89, pinned to the amd64 manifest.
+  image: rust:1.89@sha256:a31942999645514ff53f470d395a9b3f06e05149faa845732d0cdf132767dcbd
   before_script:
     - apt-get update -qq && apt-get install -y -qq wget > /dev/null 2>&1
     - wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+    - echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c -
     - tar -C /usr/local -xzf /tmp/go.tar.gz
     - export PATH="/usr/local/go/bin:${PATH}"
     - rustup component add rustfmt clippy
@@ -29,6 +32,7 @@ check:
   script:
     - export PATH="/usr/local/go/bin:${PATH}"
     - cargo fmt -- --check
-    - cargo clippy -- -D warnings
+    - cargo clippy --all-targets -- -D warnings
     - cargo build
+    - (cd go-lib && go mod verify && go build ./... && go test ./...)
     - cargo check --examples

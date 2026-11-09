@@ -7,16 +7,35 @@ import (
 	"io"
 	"net"
 	"os"
-	"sync"
-	"syscall"
+	"sync/atomic"
+
+	"golang.org/x/sys/unix"
 )
 
-// createSocketPair creates a Unix socketpair and returns the two FDs.
+// openNoFollow makes capture files fail instead of following a planted
+// symlink.
+const openNoFollow = unix.O_NOFOLLOW
+
+// createSocketPair creates a Unix socketpair and returns the two FDs. Both
+// ends are close-on-exec so an exec'd child cannot inherit live mesh sockets;
+// Rust receives an already-CLOEXEC FD.
 func createSocketPair() ([2]int, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	return socketPair(unix.SOCK_STREAM)
+}
+
+// createDatagramSocketPair creates a SOCK_DGRAM Unix socketpair that preserves
+// message boundaries for UDP datagram forwarding.
+func createDatagramSocketPair() ([2]int, error) {
+	return socketPair(unix.SOCK_DGRAM)
+}
+
+func socketPair(typ int) ([2]int, error) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, typ, 0)
 	if err != nil {
 		return [2]int{-1, -1}, err
 	}
+	unix.CloseOnExec(fds[0])
+	unix.CloseOnExec(fds[1])
 	return fds, nil
 }
 
@@ -42,26 +61,18 @@ func pumpConnection(conn net.Conn, fd int) {
 	<-done
 }
 
-// createDatagramSocketPair creates a SOCK_DGRAM Unix socketpair that preserves
-// message boundaries for UDP datagram forwarding.
-func createDatagramSocketPair() ([2]int, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
-	if err != nil {
-		return [2]int{-1, -1}, err
-	}
-	return fds, nil
-}
-
 // pumpDatagrams bidirectionally copies datagrams between a net.PacketConn
-// and a SOCK_DGRAM socketpair FD. Tracks the last sender address so
-// outbound datagrams from the Rust side are routed to the correct peer.
+// and a SOCK_DGRAM socketpair FD.
+//
+// A single socketpair cannot carry peer addresses, so outbound datagrams go to
+// the peer that was active most recently. Reverse proxies use per-peer local
+// sockets instead and demultiplex properly.
 func pumpDatagrams(meshConn net.PacketConn, fd int) {
 	file := os.NewFile(uintptr(fd), "dgram-socketpair")
 	defer file.Close()
 	defer meshConn.Close()
 
-	var lastAddr net.Addr
-	var mu sync.Mutex
+	var lastAddr atomic.Pointer[net.Addr]
 
 	// mesh -> socketpair
 	go func() {
@@ -71,10 +82,10 @@ func pumpDatagrams(meshConn net.PacketConn, fd int) {
 			if err != nil {
 				return
 			}
-			mu.Lock()
-			lastAddr = addr
-			mu.Unlock()
-			file.Write(buf[:n])
+			lastAddr.Store(&addr)
+			if _, err := file.Write(buf[:n]); err != nil {
+				return
+			}
 		}
 	}()
 
@@ -85,11 +96,40 @@ func pumpDatagrams(meshConn net.PacketConn, fd int) {
 		if err != nil {
 			return
 		}
-		mu.Lock()
-		addr := lastAddr
-		mu.Unlock()
-		if addr != nil {
-			meshConn.WriteTo(buf[:n], addr)
+		if addr := lastAddr.Load(); addr != nil {
+			_, _ = meshConn.WriteTo(buf[:n], *addr)
+		}
+	}
+}
+
+// pumpDatagramsConn forwards datagrams to and from a connected UDP net.Conn
+// (the result of dialing UDP through the mesh).
+func pumpDatagramsConn(conn net.Conn, fd int) {
+	file := os.NewFile(uintptr(fd), "dgram-socketpair")
+	defer file.Close()
+	defer conn.Close()
+
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := file.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 65536)
+	for {
+		n, err := file.Read(buf)
+		if err != nil {
+			return
+		}
+		if _, err := conn.Write(buf[:n]); err != nil {
+			return
 		}
 	}
 }
@@ -108,23 +148,33 @@ func acceptLoop(listener net.Listener, sigFd int) {
 			return
 		}
 
-		fds, err := createSocketPair()
-		if err != nil {
-			conn.Close()
+		if !acceptSem.acquire() {
+			_ = conn.Close()
 			continue
 		}
 
-		go pumpConnection(conn, fds[0])
+		go func() {
+			defer acceptSem.release()
+			fds, err := createSocketPair()
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
 
-		// Write the client FD as a 4-byte LE integer over the signaling socket
-		var fdBuf [4]byte
-		binary.LittleEndian.PutUint32(fdBuf[:], uint32(fds[1]))
-		_, err = sigFile.Write(fdBuf[:])
-		if err != nil {
-			syscall.Close(fds[1])
-			continue
-		}
-		// FD ownership stays with this process — Rust reads the integer and
-		// uses it directly (both sides share the same process).
+			// Write the client FD as a 4-byte LE integer over the signaling socket.
+			var fdBuf [4]byte
+			binary.LittleEndian.PutUint32(fdBuf[:], uint32(fds[1]))
+			if _, err := sigFile.Write(fdBuf[:]); err != nil {
+				// Nobody will ever receive this FD again.
+				unix.Close(fds[1])
+				unix.Close(fds[0])
+				_ = conn.Close()
+				return
+			}
+
+			// Blocks until the connection ends; the semaphore stays held so a
+			// burst cannot accumulate unbounded pumps.
+			pumpConnection(conn, fds[0])
+		}()
 	}
 }

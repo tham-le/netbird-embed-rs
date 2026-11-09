@@ -1,0 +1,30 @@
+# Third-party notices
+
+`netbird-embed-rs` is BSD-3-Clause. The compiled C-shared library links the
+following components. Their licenses apply to those parts.
+
+## Bundled at build time
+
+- **NetBird** (`github.com/netbirdio/netbird`) — BSD-3-Clause.
+  https://github.com/netbirdio/netbird/blob/main/LICENSE
+- **WireGuard-go** (`github.com/netbirdio/wireguard-go`) — MIT.
+  https://github.com/netbirdio/wireguard-go/blob/master/LICENSE
+- **CIRCL** (`codeberg.org/cunicu/circl`) — BSD-3-Clause.
+  https://github.com/cloudflare/circl/blob/master/LICENSE
+
+## Transitive Go modules
+
+The full dependency graph and versions are pinned in `go-lib/go.mod` and
+`go-lib/go.sum`. Each module retains its upstream license; notable ones:
+
+- `gvisor.dev/gvisor` — Apache-2.0
+- `google.golang.org/grpc` — Apache-2.0
+- `google.golang.org/protobuf` — BSD-3-Clause
+- `github.com/sirupsen/logrus` — MIT
+- `github.com/google/uuid` — BSD-3-Clause
+- `golang.zx2c4.com/wireguard/wgctrl` — MIT
+
+## Rust crates
+
+`libc` (MIT OR Apache-2.0), `serde`/`serde_json` (MIT OR Apache-2.0), and
+`thiserror` (MIT OR Apache-2.0). Exact versions are in `Cargo.lock`.

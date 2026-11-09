@@ -1,2 +1,2 @@
 /target/
-Cargo.lock
+/go-lib/go-lib
